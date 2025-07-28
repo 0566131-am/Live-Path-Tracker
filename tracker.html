@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Live Location Tracker with Battery and Direction</title>
+
+  <!-- Google Fonts -->
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@600&family=Roboto+Mono:wght@500&display=swap" rel="stylesheet">
+
+  <!-- Leaflet CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.3/dist/leaflet.css" />
+
+  <style>
+    body {
+      font-family: 'Poppins', sans-serif;
+      padding: 30px;
+      margin: 0;
+      background-color: #f4f4f4;
+      transition: background 0.3s ease;
+    }
+
+    .dark-mode {
+      background-color: #1e1e1e;
+      color: #f0f0f0;
+    }
+
+    h1 {
+      text-align: center;
+      color: #333;
+      font-size: 32px;
+    }
+
+    .container {
+      max-width: 800px;
+      margin: auto;
+    }
+
+    #controls, #output, #map {
+      background: #fff;
+      padding: 15px;
+      border-radius: 8px;
+      margin-bottom: 20px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+      transition: all 0.3s ease-in-out;
+    }
+
+    .dark-mode #controls,
+    .dark-mode #output,
+    .dark-mode #map {
+      background: #2b2b2b;
+      color: #fff;
+    }
+
+    button {
+      margin-top: 10px;
+      padding: 10px 20px;
+      font-size: 15px;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      background-color: #007BFF;
+      color: white;
+      transition: background 0.2s ease-in-out;
+    }
+
+    button:hover {
+      background-color: #0056b3;
+    }
+
+    input {
+      padding: 8px;
+      font-size: 14px;
+      margin: 5px 0;
+      width: 100%;
+      border-radius: 6px;
+      border: 1px solid #ccc;
+    }
+
+    #map {
+      height: 300px;
+      border-radius: 10px;
+    }
+
+    .label {
+      font-weight: bold;
+      margin-top: 10px;
+    }
+
+    #themeToggle {
+      float: right;
+      margin-top: -40px;
+    }
+
+    .gps-status {
+      padding: 5px 10px;
+      background: #28a745;
+      color: white;
+      border-radius: 5px;
+      font-size: 13px;
+      display: inline-block;
+      margin-top: 10px;
+    }
+
+    .gps-status.inactive {
+      background: #dc3545;
+    }
+
+    .highlight {
+      animation: pulse 1s ease-in-out;
+    }
+
+    @keyframes pulse {
+      0% { background-color: #fff1c1; }
+      100% { background-color: inherit; }
+    }
+  </style>
+</head>
+<body>
+
+  <div class="container">
+    <h1>Live Location Tracker</h1>
+    <button id="themeToggle">🌓 Toggle Dark Mode</button>
+
+    <div id="controls">
+      <div class="label">🎯 Set Target Coordinates</div>
+      <input type="number" id="targetLat" placeholder="Target Latitude" step="any" />
+      <input type="number" id="targetLon" placeholder="Target Longitude" step="any" />
+      <button onclick="setTarget()">Set Target</button>
+      <button onclick="startTracking()">Start Tracking</button>
+      <button onclick="stopTracking()">Stop Tracking</button>
+    </div>
+
+    <div id="output">
+      <p><strong>Latitude:</strong> <span id="lat">N/A</span> <span id="latDir"></span></p>
+      <p><strong>Longitude:</strong> <span id="lon">N/A</span> <span id="lonDir"></span></p>
+      <p><strong>Direction:</strong> <span id="direction">Unknown</span></p>
+      <p><strong>Battery:</strong> 🔋 <span id="battery">Loading...</span></p>
+      <p><strong>Last Updated:</strong> <span id="timestamp">Waiting...</span></p>
+      <p><strong>Distance to Target:</strong> <span id="distance">N/A</span></p>
+      <span class="gps-status" id="gpsStatus">GPS Active</span>
+    </div>
+
+    <div id="map"></div>
+  </div>
+
+  <!-- Leaflet JS -->
+  <script src="https://unpkg.com/leaflet@1.9.3/dist/leaflet.js"></script>
+
+  <script>
+    let watchId = null;
+    let map, marker, targetMarker;
+    let targetLat = null;
+    let targetLon = null;
+    let lastLat = null;
+    let lastLon = null;
+
+    function calculateDistance(lat1, lon1, lat2, lon2) {
+      const R = 6371;
+      const dLat = (lat2 - lat1) * Math.PI / 180;
+      const dLon = (lon2 - lon1) * Math.PI / 180;
+      const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+                Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+                Math.sin(dLon / 2) * Math.sin(dLon / 2);
+      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+      return (R * c).toFixed(2);
+    }
+
+    function highlightOutput() {
+      document.getElementById("output").classList.add("highlight");
+      setTimeout(() => {
+        document.getElementById("output").classList.remove("highlight");
+      }, 1000);
+    }
+
+    function createEmojiMarker(emoji) {
+      return L.divIcon({
+        className: '',
+        html: `<div style="font-size: 24px;">${emoji}</div>`,
+        iconSize: [30, 30],
+        iconAnchor: [15, 30]
+      });
+    }
+
+    function updateDirection(currentLat, currentLon) {
+      let latDir = currentLat >= 0 ? "North" : "South";
+      let lonDir = currentLon >= 0 ? "East" : "West";
+      document.getElementById("direction").textContent = `${latDir} ${lonDir}`;
+    }
+
+    function startTracking() {
+      if (!navigator.geolocation) {
+        alert("Geolocation not supported.");
+        return;
+      }
+
+      document.getElementById("gpsStatus").textContent = "GPS Active";
+      document.getElementById("gpsStatus").classList.remove("inactive");
+
+      if (!map) {
+        map = L.map('map').setView([0, 0], 2);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+          attribution: '&copy; OpenStreetMap contributors'
+        }).addTo(map);
+      }
+
+      watchId = navigator.geolocation.watchPosition(position => {
+        const lat = position.coords.latitude;
+        const lon = position.coords.longitude;
+        const time = new Date(position.timestamp).toLocaleTimeString();
+
+        document.getElementById("lat").textContent = lat.toFixed(6);
+        document.getElementById("lon").textContent = lon.toFixed(6);
+        document.getElementById("latDir").textContent = lat >= 0 ? "(North)" : "(South)";
+        document.getElementById("lonDir").textContent = lon >= 0 ? "(East)" : "(West)";
+        document.getElementById("timestamp").textContent = time;
+
+        updateDirection(lat, lon);
+
+        if (marker) map.removeLayer(marker);
+        marker = L.marker([lat, lon], { icon: createEmojiMarker("📍") }).addTo(map).bindPopup("You are here").openPopup();
+        map.setView([lat, lon], 15);
+
+        if (targetLat !== null && targetLon !== null) {
+          const dist = calculateDistance(lat, lon, targetLat, targetLon);
+          document.getElementById("distance").textContent = dist + " km";
+        }
+
+        highlightOutput();
+      }, error => {
+        document.getElementById("gpsStatus").textContent = "GPS Inactive";
+        document.getElementById("gpsStatus").classList.add("inactive");
+        alert("Error: " + error.message);
+      }, {
+        enableHighAccuracy: true,
+        maximumAge: 0,
+        timeout: 10000
+      });
+
+      // Battery status
+      if (navigator.getBattery) {
+        navigator.getBattery().then(battery => {
+          function updateBattery() {
+            const percent = Math.round(battery.level * 100);
+            document.getElementById("battery").textContent = percent + "%";
+          }
+          updateBattery();
+          battery.addEventListener('levelchange', updateBattery);
+        });
+      } else {
+        document.getElementById("battery").textContent = "Not Supported";
+      }
+    }
+
+    function stopTracking() {
+      if (watchId !== null) {
+        navigator.geolocation.clearWatch(watchId);
+        watchId = null;
+        document.getElementById("lat").textContent = "N/A";
+        document.getElementById("lon").textContent = "N/A";
+        document.getElementById("timestamp").textContent = "Tracking stopped.";
+        document.getElementById("distance").textContent = "N/A";
+        document.getElementById("gpsStatus").textContent = "GPS Inactive";
+        document.getElementById("gpsStatus").classList.add("inactive");
+        document.getElementById("direction").textContent = "Unknown";
+        if (marker) map.removeLayer(marker);
+      }
+    }
+
+    function setTarget() {
+      targetLat = parseFloat(document.getElementById("targetLat").value);
+      targetLon = parseFloat(document.getElementById("targetLon").value);
+      if (isNaN(targetLat) || isNaN(targetLon)) {
+        alert("Please enter valid target coordinates.");
+        return;
+      }
+
+      if (targetMarker) map.removeLayer(targetMarker);
+      targetMarker = L.marker([targetLat, targetLon], {
+        icon: createEmojiMarker("🎯")
+      }).addTo(map).bindPopup("Target Location 🎯");
+    }
+
+    // Theme toggle
+    document.getElementById("themeToggle").onclick = () => {
+      document.body.classList.toggle("dark-mode");
+    };
+  </script>
+
+</body>
+</html>
